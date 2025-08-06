@@ -1,4 +1,5 @@
 import streamlit as st
+from prometheus_client import CollectorRegistry, Counter, Histogram, Gauge, start_http_server, CONTENT_TYPE_LATEST
 import requests
 import json
 import csv
@@ -9,7 +10,6 @@ from datetime import datetime
 import plotly.express as px
 import io
 import threading
-from prometheus_client import Counter, Histogram, Gauge, CollectorRegistry, generate_latest, CONTENT_TYPE_LATES, start_http_server
 from prometheus_client.exposition import MetricsHandler
 from http.server import HTTPServer
 import logging
@@ -382,7 +382,7 @@ def create_download_link(df, filename="data.csv"):
         logger.error(f"Download link creation error: {e}")
         return "다운로드 링크 생성 실패"
 
-def main():
+def def main():
     # Track page view
     user_actions_total.labels(action_type='page_view').inc()
     
