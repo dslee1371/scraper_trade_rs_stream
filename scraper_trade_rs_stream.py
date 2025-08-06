@@ -113,9 +113,13 @@ class PrometheusMetrics:
 # Global metrics instance
 metrics = PrometheusMetrics()
 
-# Start Prometheus server when module loads
-start_http_server(8000, registry=registry)
-logger.info("✅ Prometheus HTTP server bound on 0.0.0.0:8000")
+# Start Prometheus server once
+if 'prometheus_server_started' not in st.session_state:
+    start_http_server(8000, registry=registry)
+    st.session_state['prometheus_server_started'] = True
+    logger.info("✅ Prometheus HTTP server bound on 0.0.0.0:8000")
+else:
+    logger.debug("Prometheus HTTP server already running")
 
 def fetch_real_estate_data(complex_no, page=1, max_pages=10):
     """
