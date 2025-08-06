@@ -9,9 +9,6 @@ import base64
 from datetime import datetime
 import plotly.express as px
 import io
-import threading
-from prometheus_client.exposition import MetricsHandler
-from http.server import HTTPServer
 import logging
 
 # Configure logging
@@ -115,36 +112,6 @@ class PrometheusMetrics:
 
 # Global metrics instance
 metrics = PrometheusMetrics()
-
-def start_prometheus_server(port=8000):
-    """Start Prometheus metrics server in a separate thread"""
-    class PrometheusHandler(MetricsHandler):
-        def __init__(self, registry):
-            self.registry = registry
-            
-        def do_GET(self):
-            if self.path == '/metrics':
-                self.send_response(200)
-                self.send_header('Content-Type', CONTENT_TYPE_LATEST)
-                self.end_headers()
-                output = generate_latest(registry)
-                self.wfile.write(output)
-            else:
-                self.send_error(404)
-    
-    def run_server():
-        try:
-            handler = lambda *args: PrometheusHandler(registry)(*args)
-            server = HTTPServer(('', port), handler)
-            logger.info(f"Prometheus metrics server started on port {port}")
-            server.serve_forever()
-        except Exception as e:
-            logger.error(f"Failed to start Prometheus server: {e}")
-    
-    # Start server in daemon thread
-    server_thread = threading.Thread(target=run_server, daemon=True)
-    server_thread.start()
-    return server_thread
 
 # Start Prometheus server when module loads
 start_http_server(8000, registry=registry)
@@ -383,7 +350,7 @@ def create_download_link(df, filename="data.csv"):
         logger.error(f"Download link creation error: {e}")
         return "다운로드 링크 생성 실패"
 
-def def main():
+def main():
     # Track page view
     user_actions_total.labels(action_type='page_view').inc()
     
