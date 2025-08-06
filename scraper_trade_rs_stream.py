@@ -148,6 +148,7 @@ def start_prometheus_server(port=8000):
 
 # Start Prometheus server when module loads
 start_http_server(8000, registry=registry)
+logger.info("✅ Prometheus HTTP server bound on 0.0.0.0:8000")
 
 def fetch_real_estate_data(complex_no, page=1, max_pages=10):
     """
