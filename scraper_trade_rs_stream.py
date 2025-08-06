@@ -127,8 +127,9 @@ def clean_price(price_str):
     if not price_str:
         return ""
     
-    # Replace Korean currency symbols/words and standardize
-    price_str = price_str.replace("억", "").strip()
+    # Replace the Korean "억" unit with a space so both "5억 2,000" and
+    # "5억2,000" formats are handled consistently
+    price_str = price_str.replace("억", " ").strip()
     
     # Handle price formats like "5억 2,000"
     parts = price_str.split()
