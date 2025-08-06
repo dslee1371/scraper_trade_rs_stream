@@ -9,7 +9,7 @@ from datetime import datetime
 import plotly.express as px
 import io
 import threading
-from prometheus_client import Counter, Histogram, Gauge, CollectorRegistry, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import Counter, Histogram, Gauge, CollectorRegistry, generate_latest, CONTENT_TYPE_LATES, start_http_server
 from prometheus_client.exposition import MetricsHandler
 from http.server import HTTPServer
 import logging
@@ -147,9 +147,7 @@ def start_prometheus_server(port=8000):
     return server_thread
 
 # Start Prometheus server when module loads
-if 'prometheus_server_started' not in st.session_state:
-    start_prometheus_server(8000)
-    st.session_state.prometheus_server_started = True
+start_http_server(8000, registry=registry)
 
 def fetch_real_estate_data(complex_no, page=1, max_pages=10):
     """
