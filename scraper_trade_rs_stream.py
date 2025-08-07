@@ -11,33 +11,48 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-from prometheus_client import Counter, Histogram, Gauge, start_http_server
+from prometheus_client import (
+    CollectorRegistry,
+    Counter,
+    Histogram,
+    Gauge,
+    start_http_server
+)
 
 # ─── Prometheus Metrics 정의 ────────────────────────────────────────────────
+registry = CollectorRegistry()
+
 PAGE_FETCH_COUNTER = Counter(
     'naver_scraper_pages_fetched_total',
-    '총 네이버 부동산 페이지 요청 횟수'
+    '총 네이버 부동산 페이지 요청 횟수',
+    registry=registry
 )
 PAGE_FETCH_DURATION = Histogram(
     'naver_scraper_page_fetch_duration_seconds',
     '페이지 요청 지연 시간(초)',
-    buckets=(0.1, 0.5, 1, 2, 5, 10)
+    buckets=(0.1, 0.5, 1, 2, 5, 10),
+    registry=registry
 )
 ARTICLE_COUNTER = Counter(
     'naver_scraper_articles_processed_total',
-    '처리된 매물(article) 총 건수'
+    '처리된 매물(article) 총 건수',
+    registry=registry
 )
 LAST_PAGE_ARTICLE_GAUGE = Gauge(
     'naver_scraper_last_page_article_count',
-    '마지막 페이지에서 가져온 매물(article) 수'
+    '마지막 페이지에서 가져온 매물(article) 수',
+    registry=registry
 )
+
 
 def start_metrics_server():
     """Prometheus metrics 서버 시작 (포트 8000)"""
-    start_http_server(8000)
+    # registry 인자를 추가합니다
+    start_http_server(8000, registry=registry)
     print("Prometheus metrics server started on :8000")
 
 # 백그라운드에서 metrics 서버 구동
+import threading
 threading.Thread(target=start_metrics_server, daemon=True).start()
 
 # ─── Streamlit 앱 설정 ───────────────────────────────────────────────────────
