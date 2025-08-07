@@ -19,41 +19,47 @@ from prometheus_client import (
     start_http_server
 )
 
-# ─── Prometheus Metrics 정의 ────────────────────────────────────────────────
-registry = CollectorRegistry()
+# ─── Prometheus Metrics 설정 (Streamlit 캐시 활용) ──────────────────────────
 
-PAGE_FETCH_COUNTER = Counter(
-    'naver_scraper_pages_fetched_total',
-    '총 네이버 부동산 페이지 요청 횟수',
-    registry=registry
-)
-PAGE_FETCH_DURATION = Histogram(
-    'naver_scraper_page_fetch_duration_seconds',
-    '페이지 요청 지연 시간(초)',
-    buckets=(0.1, 0.5, 1, 2, 5, 10),
-    registry=registry
-)
-ARTICLE_COUNTER = Counter(
-    'naver_scraper_articles_processed_total',
-    '처리된 매물(article) 총 건수',
-    registry=registry
-)
-LAST_PAGE_ARTICLE_GAUGE = Gauge(
-    'naver_scraper_last_page_article_count',
-    '마지막 페이지에서 가져온 매물(article) 수',
-    registry=registry
-)
+@st.cache_resource
+def setup_metrics():
+    """
+    Prometheus 메트릭 객체들을 초기화하고 서버를 시작합니다.
+    이 함수는 @st.cache_resource에 의해 세션 당 한 번만 실행됩니다.
+    """
+    registry = CollectorRegistry()
 
+    page_fetch_counter = Counter(
+        'naver_scraper_pages_fetched_total',
+        '총 네이버 부동산 페이지 요청 횟수',
+        registry=registry
+    )
+    page_fetch_duration = Histogram(
+        'naver_scraper_page_fetch_duration_seconds',
+        '페이지 요청 지연 시간(초)',
+        buckets=(0.1, 0.5, 1, 2, 5, 10),
+        registry=registry
+    )
+    article_counter = Counter(
+        'naver_scraper_articles_processed_total',
+        '처리된 매물(article) 총 건수',
+        registry=registry
+    )
+    last_page_article_gauge = Gauge(
+        'naver_scraper_last_page_article_count',
+        '마지막 페이지에서 가져온 매물(article) 수',
+        registry=registry
+    )
 
-def start_metrics_server():
-    """Prometheus metrics 서버 시작 (포트 8000)"""
-    # registry 인자를 추가합니다
+    # 백그라운드에서 metrics 서버 구동
     start_http_server(8000, registry=registry)
     print("Prometheus metrics server started on :8000")
 
-# 백그라운드에서 metrics 서버 구동
-import threading
-threading.Thread(target=start_metrics_server, daemon=True).start()
+    return page_fetch_counter, page_fetch_duration, article_counter, last_page_article_gauge
+
+# 애플리케이션 시작 시 메트릭 객체들을 가져옵니다.
+PAGE_FETCH_COUNTER, PAGE_FETCH_DURATION, ARTICLE_COUNTER, LAST_PAGE_ARTICLE_GAUGE = setup_metrics()
+
 
 # ─── Streamlit 앱 설정 ───────────────────────────────────────────────────────
 st.set_page_config(
@@ -119,57 +125,37 @@ def fetch_real_estate_data(complex_no, page=1, max_pages=10):
             f'&complexNo={complex_no}&buildingNos=&areaNos=&type=list&order=rank'
         )
 
-        # HTTP 요청 및 페이지 카운터
         with PAGE_FETCH_DURATION.time():
             try:
                 response = requests.get(url, cookies=cookies, headers=headers)
                 response.raise_for_status()
-                
-                # 요청이 성공한 경우에만 페이지 카운터 증가
                 PAGE_FETCH_COUNTER.inc()
-                
             except Exception as e:
                 status_placeholder.error(f"페이지 {current_page} 데이터 가져오기 실패: {e}")
-                print(f"HTTP 요청 실패: {e}")  # 디버깅용
+                print(f"HTTP 요청 실패: {e}")
                 break
 
-        # JSON 파싱
         try:
             data = response.json()
         except Exception as e:
             status_placeholder.error(f"페이지 {current_page} JSON 파싱 실패: {e}")
-            print(f"JSON 파싱 실패: {e}")  # 디버깅용
+            print(f"JSON 파싱 실패: {e}")
             continue
 
-        # 매물 데이터 처리
         articles = data.get('articleList', [])
         article_count = len(articles)
-        
-        # 디버깅 정보 출력
-        print(f"페이지 {current_page}: {article_count}개 매물 발견")
-        
+
         if not articles:
             status_placeholder.text("더 이상 매물이 없습니다.")
-            # 빈 페이지도 게이지에 반영
             LAST_PAGE_ARTICLE_GAUGE.set(0)
             break
 
-        # 매물 리스트에 추가
         all_articles.extend(articles)
-        
-        # 매물 카운터 증가 (이 페이지에서 가져온 매물 수만큼)
         ARTICLE_COUNTER.inc(article_count)
-        
-        # 게이지 업데이트 (마지막 페이지의 매물 수)
         LAST_PAGE_ARTICLE_GAUGE.set(article_count)
         
-        # 디버깅: 현재 메트릭 값 출력
-        print(f"현재 ARTICLE_COUNTER 값: {ARTICLE_COUNTER._value._value}")
-        print(f"현재 LAST_PAGE_ARTICLE_GAUGE 값: {LAST_PAGE_ARTICLE_GAUGE._value._value}")
-
         status_placeholder.text(f"페이지 {current_page}에서 {article_count}개 매물 정보를 가져왔습니다.")
         
-        # 더 이상 데이터가 없으면 종료
         if not data.get('isMoreData', False):
             status_placeholder.text("마지막 페이지입니다.")
             break
@@ -181,14 +167,8 @@ def fetch_real_estate_data(complex_no, page=1, max_pages=10):
     total_articles = len(all_articles)
     status_placeholder.text(f"총 {total_articles}개 매물 정보를 가져왔습니다.")
     
-    # 최종 디버깅 정보
-    print(f"=== 최종 메트릭 값 ===")
-    print(f"PAGE_FETCH_COUNTER: {PAGE_FETCH_COUNTER._value._value}")
-    print(f"ARTICLE_COUNTER: {ARTICLE_COUNTER._value._value}")
-    print(f"LAST_PAGE_ARTICLE_GAUGE: {LAST_PAGE_ARTICLE_GAUGE._value._value}")
-    print(f"실제 수집된 매물 수: {total_articles}")
-    
     return all_articles
+
 
 def clean_price(price_str):
     if not price_str:
@@ -203,9 +183,10 @@ def clean_price(price_str):
         except (ValueError, IndexError):
             return price_str
     try:
-        return f"{float(price_str):.2f}"
+        return f"{float(price_str.replace(',', '')):.2f}"
     except ValueError:
         return price_str
+
 
 def process_data(articles):
     if not articles:
@@ -271,6 +252,7 @@ def main():
             st.session_state.df = df
             st.session_state.cn = cn
             st.success(f"총 {len(df)} 개의 매물 정보를 가져왔습니다!")
+            st.rerun() # 데이터를 다시 그리도록 강제
 
     if 'df' in st.session_state and not st.session_state.df.empty:
         df = st.session_state.df
@@ -285,7 +267,7 @@ def main():
 
         with tab2:
             st.subheader("데이터 분석")
-            if '가격(억)' in df.columns:
+            if '가격(억)' in df.columns and not df['가격(억)'].isnull().all():
                 c1, c2, c3 = st.columns(3)
                 c1.metric("평균 가격(억)", f"{df['가격(억)'].mean():.2f}")
                 c2.metric("최고 가격(억)", f"{df['가격(억)'].max():.2f}")
@@ -300,21 +282,21 @@ def main():
             st.subheader("면적별 평균 가격")
             if '전용면적(㎡)' in df.columns:
                 df['면적구간'] = pd.cut(df['전용면적(㎡)'], bins=[0,30,60,85,120,200],
-                                      labels=['~30㎡','30~60㎡','60~85㎡','85~120㎡','120㎡~'])
-                area_avg = df.groupby('면적구간')['가격(억)'].agg(['mean','count']).reset_index()
+                                        labels=['~30㎡','30~60㎡','60~85㎡','85~120㎡','120㎡~'])
+                area_avg = df.groupby('면적구간', observed=True)['가격(억)'].agg(['mean','count']).reset_index()
                 area_avg.columns=['면적구간','평균 가격(억)','매물 수']
                 st.dataframe(area_avg, use_container_width=True)
 
         with tab3:
             st.subheader("데이터 시각화")
-            if '가격(억)' in df.columns:
+            if '가격(억)' in df.columns and not df['가격(억)'].isnull().all():
                 st.subheader("가격 분포")
                 fig = px.histogram(df, x='가격(억)', nbins=20, title="가격 분포")
                 st.plotly_chart(fig, use_container_width=True)
 
                 if '층정보' in df.columns:
-                    df['층'] = df['층정보'].str.extract(r'(\d+)/').astype(float, errors='ignore')
-                    fl = df.dropna(subset=['층'])
+                    df['층'] = df['층정보'].str.extract(r'(\d+)/').astype(float)
+                    fl = df.dropna(subset=['층', '가격(억)'])
                     if not fl.empty:
                         st.subheader("층별 가격")
                         fig = px.scatter(fl, x='층', y='가격(억)',
@@ -331,20 +313,20 @@ def main():
                                      labels={'전용면적(㎡)':'전용면적(㎡)','가격(억)':'가격(억)'})
                     st.plotly_chart(fig, use_container_width=True)
 
-                if '위도' in df.columns and '경도' in df.columns:
-                    st.subheader("지도 보기")
-                    df['위도'] = pd.to_numeric(df['위도'], errors='coerce')
-                    df['경도'] = pd.to_numeric(df['경도'], errors='coerce')
-                    mp = df.dropna(subset=['위도','경도'])
-                    if not mp.empty:
-                        fig = px.scatter_mapbox(mp, lat='위도', lon='경도',
-                                               color='가격(억)',
-                                               size='전용면적(㎡)' if '전용면적(㎡)' in mp.columns else None,
-                                               hover_name='매물명',
-                                               hover_data=['가격','거래유형','층정보','전용면적(㎡)'],
-                                               zoom=15,
-                                               mapbox_style="carto-positron")
-                        st.plotly_chart(fig, use_container_width=True)
+            if '위도' in df.columns and '경도' in df.columns:
+                st.subheader("지도 보기")
+                df['위도'] = pd.to_numeric(df['위도'], errors='coerce')
+                df['경도'] = pd.to_numeric(df['경도'], errors='coerce')
+                mp = df.dropna(subset=['위도','경도', '가격(억)'])
+                if not mp.empty:
+                    fig = px.scatter_mapbox(mp, lat='위도', lon='경도',
+                                            color='가격(억)',
+                                            size='전용면적(㎡)' if '전용면적(㎡)' in mp.columns else None,
+                                            hover_name='매물명',
+                                            hover_data=['가격','거래유형','층정보','전용면적(㎡)'],
+                                            zoom=15,
+                                            mapbox_style="carto-positron")
+                    st.plotly_chart(fig, use_container_width=True)
 
 if __name__ == "__main__":
     main()
