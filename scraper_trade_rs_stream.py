@@ -119,27 +119,57 @@ def fetch_real_estate_data(complex_no, page=1, max_pages=10):
             f'&complexNo={complex_no}&buildingNos=&areaNos=&type=list&order=rank'
         )
 
+        # HTTP 요청 및 페이지 카운터
         with PAGE_FETCH_DURATION.time():
             try:
                 response = requests.get(url, cookies=cookies, headers=headers)
                 response.raise_for_status()
+                
+                # 요청이 성공한 경우에만 페이지 카운터 증가
+                PAGE_FETCH_COUNTER.inc()
+                
             except Exception as e:
                 status_placeholder.error(f"페이지 {current_page} 데이터 가져오기 실패: {e}")
+                print(f"HTTP 요청 실패: {e}")  # 디버깅용
                 break
 
-        PAGE_FETCH_COUNTER.inc()
-        data = response.json()
+        # JSON 파싱
+        try:
+            data = response.json()
+        except Exception as e:
+            status_placeholder.error(f"페이지 {current_page} JSON 파싱 실패: {e}")
+            print(f"JSON 파싱 실패: {e}")  # 디버깅용
+            continue
 
+        # 매물 데이터 처리
         articles = data.get('articleList', [])
+        article_count = len(articles)
+        
+        # 디버깅 정보 출력
+        print(f"페이지 {current_page}: {article_count}개 매물 발견")
+        
         if not articles:
             status_placeholder.text("더 이상 매물이 없습니다.")
+            # 빈 페이지도 게이지에 반영
+            LAST_PAGE_ARTICLE_GAUGE.set(0)
             break
 
+        # 매물 리스트에 추가
         all_articles.extend(articles)
-        ARTICLE_COUNTER.inc(len(articles))
-        LAST_PAGE_ARTICLE_GAUGE.set(len(articles))
+        
+        # 매물 카운터 증가 (이 페이지에서 가져온 매물 수만큼)
+        ARTICLE_COUNTER.inc(article_count)
+        
+        # 게이지 업데이트 (마지막 페이지의 매물 수)
+        LAST_PAGE_ARTICLE_GAUGE.set(article_count)
+        
+        # 디버깅: 현재 메트릭 값 출력
+        print(f"현재 ARTICLE_COUNTER 값: {ARTICLE_COUNTER._value._value}")
+        print(f"현재 LAST_PAGE_ARTICLE_GAUGE 값: {LAST_PAGE_ARTICLE_GAUGE._value._value}")
 
-        status_placeholder.text(f"페이지 {current_page}에서 {len(articles)}개 매물 정보를 가져왔습니다.")
+        status_placeholder.text(f"페이지 {current_page}에서 {article_count}개 매물 정보를 가져왔습니다.")
+        
+        # 더 이상 데이터가 없으면 종료
         if not data.get('isMoreData', False):
             status_placeholder.text("마지막 페이지입니다.")
             break
@@ -148,7 +178,16 @@ def fetch_real_estate_data(complex_no, page=1, max_pages=10):
         current_page += 1
 
     progress_bar.progress(1.0)
-    status_placeholder.text(f"총 {len(all_articles)}개 매물 정보를 가져왔습니다.")
+    total_articles = len(all_articles)
+    status_placeholder.text(f"총 {total_articles}개 매물 정보를 가져왔습니다.")
+    
+    # 최종 디버깅 정보
+    print(f"=== 최종 메트릭 값 ===")
+    print(f"PAGE_FETCH_COUNTER: {PAGE_FETCH_COUNTER._value._value}")
+    print(f"ARTICLE_COUNTER: {ARTICLE_COUNTER._value._value}")
+    print(f"LAST_PAGE_ARTICLE_GAUGE: {LAST_PAGE_ARTICLE_GAUGE._value._value}")
+    print(f"실제 수집된 매물 수: {total_articles}")
+    
     return all_articles
 
 def clean_price(price_str):
