@@ -16,10 +16,13 @@ from prometheus_client import (
     Counter,
     Histogram,
     Gauge,
-    start_http_server
+    start_http_server,
+    generate_latest,
+    CONTENT_TYPE_LATEST
 )
 
 # ─── Prometheus Metrics 정의 ────────────────────────────────────────────────
+# 전역 registry 사용하지 않고 커스텀 registry 사용
 registry = CollectorRegistry()
 
 PAGE_FETCH_COUNTER = Counter(
@@ -44,16 +47,64 @@ LAST_PAGE_ARTICLE_GAUGE = Gauge(
     registry=registry
 )
 
+# 메트릭 서버 시작 상태를 추적하는 전역 변수
+metrics_server_started = False
+metrics_server_lock = threading.Lock()
 
 def start_metrics_server():
     """Prometheus metrics 서버 시작 (포트 8000)"""
-    # registry 인자를 추가합니다
-    start_http_server(8000, registry=registry)
-    print("Prometheus metrics server started on :8000")
+    global metrics_server_started
+    
+    with metrics_server_lock:
+        if not metrics_server_started:
+            try:
+                start_http_server(8000, registry=registry)
+                metrics_server_started = True
+                print("✅ Prometheus metrics server started on :8000")
+            except Exception as e:
+                print(f"❌ Failed to start metrics server: {e}")
+        else:
+            print("ℹ️ Metrics server already running")
 
-# 백그라운드에서 metrics 서버 구동
-import threading
-threading.Thread(target=start_metrics_server, daemon=True).start()
+def get_metric_value(metric):
+    """메트릭 값을 안전하게 가져오는 함수"""
+    try:
+        if hasattr(metric, '_value'):
+            if hasattr(metric._value, '_value'):
+                return metric._value._value
+            else:
+                return metric._value
+        else:
+            # Counter나 Gauge의 경우 직접 값을 가져올 수 있는 방법
+            samples = list(metric.collect())[0].samples
+            if samples:
+                return samples[0].value
+            return 0
+    except Exception as e:
+        print(f"메트릭 값 가져오기 실패: {e}")
+        return 0
+
+def print_metrics_debug():
+    """디버깅을 위한 메트릭 값 출력"""
+    try:
+        print(f"=== 메트릭 디버깅 정보 ===")
+        print(f"PAGE_FETCH_COUNTER: {get_metric_value(PAGE_FETCH_COUNTER)}")
+        print(f"ARTICLE_COUNTER: {get_metric_value(ARTICLE_COUNTER)}")
+        print(f"LAST_PAGE_ARTICLE_GAUGE: {get_metric_value(LAST_PAGE_ARTICLE_GAUGE)}")
+        
+        # Prometheus 형식으로 메트릭 출력 (디버깅용)
+        metrics_output = generate_latest(registry).decode('utf-8')
+        print("=== Prometheus 메트릭 출력 ===")
+        for line in metrics_output.split('\n'):
+            if 'naver_scraper' in line and not line.startswith('#'):
+                print(line)
+        print("=" * 50)
+    except Exception as e:
+        print(f"메트릭 디버깅 출력 실패: {e}")
+
+# 백그라운드에서 metrics 서버 구동 (한 번만)
+if not metrics_server_started:
+    threading.Thread(target=start_metrics_server, daemon=True).start()
 
 # ─── Streamlit 앱 설정 ───────────────────────────────────────────────────────
 st.set_page_config(
@@ -64,6 +115,23 @@ st.set_page_config(
 
 st.title("네이버 부동산 데이터 스크래퍼")
 st.markdown("네이버 부동산에서 매물 정보를 수집하고 CSV 파일로 저장합니다.")
+
+# 메트릭 정보 표시 (사이드바에)
+with st.sidebar:
+    st.header("📊 메트릭 정보")
+    
+    if st.button("메트릭 새로고침"):
+        st.rerun()
+    
+    try:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("페이지 요청", get_metric_value(PAGE_FETCH_COUNTER))
+            st.metric("처리된 매물", get_metric_value(ARTICLE_COUNTER))
+        with col2:
+            st.metric("마지막 페이지 매물", get_metric_value(LAST_PAGE_ARTICLE_GAUGE))
+    except Exception as e:
+        st.error(f"메트릭 표시 오류: {e}")
 
 def fetch_real_estate_data(complex_no, page=1, max_pages=10):
     all_articles = []
@@ -76,7 +144,7 @@ def fetch_real_estate_data(complex_no, page=1, max_pages=10):
         'NNB': 'PABUYQL3IUEGQ',
         'SRT30': '1745372539',
         'SRT5': '1745372539',
-        'page_uid': 'jsmaYlqpsECssZM5/xhssssssCG-013955',
+        'page_uid': 'jsmaYql3IUEGQ',
         '_naver_usersession_': '9vysnRea1HFqlM9WDkofSQ==',
         'nhn.realestate.article.rlet_type_cd': 'A01',
         'nhn.realestate.article.trade_type_cd': '""',
@@ -105,7 +173,7 @@ def fetch_real_estate_data(complex_no, page=1, max_pages=10):
 
     current_page = page
     while current_page <= max_pages:
-        status_placeholder.text(f"페이지 {current_page}/{max_pages} 데이터 가져오는 중...")
+        status_placeholder.text(f"📄 페이지 {current_page}/{max_pages} 데이터 가져오는 중...")
         progress_bar.progress(current_page / max_pages)
 
         url = (
@@ -119,38 +187,40 @@ def fetch_real_estate_data(complex_no, page=1, max_pages=10):
             f'&complexNo={complex_no}&buildingNos=&areaNos=&type=list&order=rank'
         )
 
-        # HTTP 요청 및 페이지 카운터
-        with PAGE_FETCH_DURATION.time():
-            try:
+        # HTTP 요청 및 메트릭 측정
+        request_start_time = time.time()
+        
+        try:
+            with PAGE_FETCH_DURATION.time():
                 response = requests.get(url, cookies=cookies, headers=headers)
                 response.raise_for_status()
                 
-                # 요청이 성공한 경우에만 페이지 카운터 증가
-                PAGE_FETCH_COUNTER.inc()
-                
-            except Exception as e:
-                status_placeholder.error(f"페이지 {current_page} 데이터 가져오기 실패: {e}")
-                print(f"HTTP 요청 실패: {e}")  # 디버깅용
-                break
+            # 요청이 성공한 경우에만 페이지 카운터 증가
+            PAGE_FETCH_COUNTER.inc()
+            print(f"✅ 페이지 {current_page} 요청 성공 - 카운터 증가")
+            
+        except Exception as e:
+            status_placeholder.error(f"❌ 페이지 {current_page} 데이터 가져오기 실패: {e}")
+            print(f"❌ HTTP 요청 실패: {e}")
+            break
 
         # JSON 파싱
         try:
             data = response.json()
+            print(f"📊 페이지 {current_page} JSON 파싱 성공")
         except Exception as e:
-            status_placeholder.error(f"페이지 {current_page} JSON 파싱 실패: {e}")
-            print(f"JSON 파싱 실패: {e}")  # 디버깅용
+            status_placeholder.error(f"❌ 페이지 {current_page} JSON 파싱 실패: {e}")
+            print(f"❌ JSON 파싱 실패: {e}")
             continue
 
         # 매물 데이터 처리
         articles = data.get('articleList', [])
         article_count = len(articles)
         
-        # 디버깅 정보 출력
-        print(f"페이지 {current_page}: {article_count}개 매물 발견")
+        print(f"📄 페이지 {current_page}: {article_count}개 매물 발견")
         
         if not articles:
-            status_placeholder.text("더 이상 매물이 없습니다.")
-            # 빈 페이지도 게이지에 반영
+            status_placeholder.text("ℹ️ 더 이상 매물이 없습니다.")
             LAST_PAGE_ARTICLE_GAUGE.set(0)
             break
 
@@ -159,34 +229,36 @@ def fetch_real_estate_data(complex_no, page=1, max_pages=10):
         
         # 매물 카운터 증가 (이 페이지에서 가져온 매물 수만큼)
         ARTICLE_COUNTER.inc(article_count)
+        print(f"📈 매물 카운터 {article_count}개 증가")
         
         # 게이지 업데이트 (마지막 페이지의 매물 수)
         LAST_PAGE_ARTICLE_GAUGE.set(article_count)
+        print(f"📊 게이지를 {article_count}로 설정")
         
-        # 디버깅: 현재 메트릭 값 출력
-        print(f"현재 ARTICLE_COUNTER 값: {ARTICLE_COUNTER._value._value}")
-        print(f"현재 LAST_PAGE_ARTICLE_GAUGE 값: {LAST_PAGE_ARTICLE_GAUGE._value._value}")
+        # 메트릭 디버깅 출력
+        print_metrics_debug()
 
-        status_placeholder.text(f"페이지 {current_page}에서 {article_count}개 매물 정보를 가져왔습니다.")
+        status_placeholder.text(f"✅ 페이지 {current_page}에서 {article_count}개 매물 정보를 가져왔습니다.")
         
         # 더 이상 데이터가 없으면 종료
         if not data.get('isMoreData', False):
-            status_placeholder.text("마지막 페이지입니다.")
+            status_placeholder.text("✅ 마지막 페이지입니다.")
             break
 
-        time.sleep(1)
+        time.sleep(1)  # 요청 간 딜레이
         current_page += 1
 
     progress_bar.progress(1.0)
     total_articles = len(all_articles)
-    status_placeholder.text(f"총 {total_articles}개 매물 정보를 가져왔습니다.")
+    status_placeholder.text(f"🎉 총 {total_articles}개 매물 정보를 가져왔습니다.")
     
-    # 최종 디버깅 정보
-    print(f"=== 최종 메트릭 값 ===")
-    print(f"PAGE_FETCH_COUNTER: {PAGE_FETCH_COUNTER._value._value}")
-    print(f"ARTICLE_COUNTER: {ARTICLE_COUNTER._value._value}")
-    print(f"LAST_PAGE_ARTICLE_GAUGE: {LAST_PAGE_ARTICLE_GAUGE._value._value}")
+    # 최종 메트릭 디버깅 정보
+    print(f"\n{'='*50}")
+    print(f"🎯 최종 결과")
+    print(f"{'='*50}")
     print(f"실제 수집된 매물 수: {total_articles}")
+    print(f"처리한 페이지 수: {current_page - 1}")
+    print_metrics_debug()
     
     return all_articles
 
@@ -238,10 +310,13 @@ def process_data(articles):
 def create_download_link(df, filename="data.csv"):
     csv_data = df.to_csv(index=False, encoding='utf-8-sig')
     b64 = base64.b64encode(csv_data.encode('utf-8-sig')).decode()
-    return f'<a href="data:file/csv;base64,{b64}" download="{filename}">CSV 파일 다운로드</a>'
+    return f'<a href="data:file/csv;base64,{b64}" download="{filename}">📥 CSV 파일 다운로드</a>'
 
 def main():
-    st.sidebar.header("검색 설정")
+    # 메트릭 서버가 시작되었는지 확인
+    start_metrics_server()
+    
+    st.sidebar.header("🔧 검색 설정")
     complex_no = st.sidebar.text_input(
         "단지 번호 입력",
         value="131345",
@@ -255,27 +330,30 @@ def main():
         help="가져올 최대 페이지 수"
     )
 
-    if st.sidebar.button("데이터 가져오기"):
+    if st.sidebar.button("🚀 데이터 가져오기", type="primary"):
         try:
             cn = int(complex_no)
         except ValueError:
-            st.error("단지 번호는 숫자여야 합니다.")
+            st.error("❌ 단지 번호는 숫자여야 합니다.")
             return
 
-        with st.spinner("데이터 가져오는 중..."):
+        with st.spinner("🔄 데이터 가져오는 중..."):
             articles = fetch_real_estate_data(cn, max_pages=max_pages)
             if not articles:
-                st.warning("데이터를 가져오지 못했습니다.")
+                st.warning("⚠️ 데이터를 가져오지 못했습니다.")
                 return
             df = process_data(articles)
             st.session_state.df = df
             st.session_state.cn = cn
-            st.success(f"총 {len(df)} 개의 매물 정보를 가져왔습니다!")
+            st.success(f"🎉 총 {len(df)} 개의 매물 정보를 가져왔습니다!")
+            
+            # 메트릭 정보 자동 새로고침
+            st.rerun()
 
     if 'df' in st.session_state and not st.session_state.df.empty:
         df = st.session_state.df
         cn = st.session_state.cn
-        tab1, tab2, tab3 = st.tabs(["데이터", "분석", "시각화"])
+        tab1, tab2, tab3 = st.tabs(["📄 데이터", "📊 분석", "📈 시각화"])
 
         with tab1:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -284,7 +362,7 @@ def main():
             st.dataframe(df, use_container_width=True)
 
         with tab2:
-            st.subheader("데이터 분석")
+            st.subheader("📊 데이터 분석")
             if '가격(억)' in df.columns:
                 c1, c2, c3 = st.columns(3)
                 c1.metric("평균 가격(억)", f"{df['가격(억)'].mean():.2f}")
@@ -306,7 +384,7 @@ def main():
                 st.dataframe(area_avg, use_container_width=True)
 
         with tab3:
-            st.subheader("데이터 시각화")
+            st.subheader("📈 데이터 시각화")
             if '가격(억)' in df.columns:
                 st.subheader("가격 분포")
                 fig = px.histogram(df, x='가격(억)', nbins=20, title="가격 분포")
@@ -332,7 +410,7 @@ def main():
                     st.plotly_chart(fig, use_container_width=True)
 
                 if '위도' in df.columns and '경도' in df.columns:
-                    st.subheader("지도 보기")
+                    st.subheader("🗺️ 지도 보기")
                     df['위도'] = pd.to_numeric(df['위도'], errors='coerce')
                     df['경도'] = pd.to_numeric(df['경도'], errors='coerce')
                     mp = df.dropna(subset=['위도','경도'])
