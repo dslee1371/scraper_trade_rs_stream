@@ -8,3 +8,5 @@ numpy==1.26.0
 matplotlib==3.8.0
 altair
 seaborn==0.13.0
+prometheus-client
+
