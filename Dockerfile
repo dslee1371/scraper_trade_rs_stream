@@ -14,7 +14,7 @@ COPY . /app
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 스트림릿 기본 포트 오픈
-EXPOSE 8501
+EXPOSE 8501 8000
 
 # 웹앱 실행
 CMD ["streamlit", "run", "scraper_trade_rs_stream.py", "--server.port=8501", "--server.address=0.0.0.0"]
